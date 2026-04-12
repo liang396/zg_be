@@ -1,6 +1,6 @@
-# zg_be（ZhiGuang Backend）
+# zg_be
 
-`zg_be` 是 **ZhiGuang（知光）** 的后端服务仓库，基于 Spring Boot 构建，提供认证与用户体系、内容发布（KnowPost）、用户关系、计数与搜索、对象存储以及 AI/RAG 能力等一组 REST API。
+`zg_be` 是 **知识社区平台** 的后端服务仓库，基于 Spring Boot 构建，提供认证与用户体系、内容发布（KnowPost）、用户关系、计数与搜索、对象存储以及 AI/RAG 能力等一组 REST API。
 
 ## 功能概览
 
