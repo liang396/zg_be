@@ -10,12 +10,12 @@
 ## 认证与账号
 ### 1. 发送验证码
 - 方法：`POST`
-- 路径：`/api/auth/send-code`
+- 路径：`/api/v1/auth/send-code`
 - 请求体：
 ```json
 {
   "scene": "REGISTER|LOGIN|RESET_PASSWORD",
-  "identifierType": "PHONE|EMAIL|USERNAME",
+  "identifierType": "PHONE|EMAIL",
   "identifier": "13800138000"
 }
 ```
@@ -23,11 +23,11 @@
   - `identifier` `string` 标识值
   - `scene` `string` 验证码场景
   - `expireSeconds` `int` 过期秒数
-- 示例：`curl -X POST "https://host/api/auth/send-code" -H "Content-Type: application/json" -d '{"scene":"REGISTER","identifierType":"PHONE","identifier":"13800138000"}'`
+- 示例：`curl -X POST "https://host/api/v1/auth/send-code" -H "Content-Type: application/json" -d '{"scene":"REGISTER","identifierType":"PHONE","identifier":"13800138000"}'`
 
 ### 2. 注册
 - 方法：`POST`
-- 路径：`/api/auth/register`
+- 路径：`/api/v1/auth/register`
 - 请求体：
 ```json
 {
@@ -35,60 +35,61 @@
   "identifier": "13800138000",
   "code": "123456",
   "password": "StrongP@ssw0rd",
-  "nickname": "新用户"
+  "agreeTerms": true
 }
 ```
 - 响应：`object`
-  - `id` `long` 用户ID
-  - `username` `string` 用户名
-  - `nickname` `string` 昵称
-  - `createdAt` `string` 创建时间（ISO）
-- 示例：`curl -X POST "https://host/api/auth/register" -H "Content-Type: application/json" -d '{"identifierType":"PHONE","identifier":"13800138000","code":"123456","password":"StrongP@ssw0rd","nickname":"新用户"}'`
+  - `user` `object` 用户信息（字段同 `AuthUserResponse`）
+  - `token` `object` 令牌信息（字段同 `TokenResponse`）
+- 示例：`curl -X POST "https://host/api/v1/auth/register" -H "Content-Type: application/json" -d '{"identifierType":"PHONE","identifier":"13800138000","code":"123456","password":"StrongP@ssw0rd","agreeTerms":true}'`
 
 ### 3. 登录
 - 方法：`POST`
-- 路径：`/api/auth/login`
+- 路径：`/api/v1/auth/login`
 - 请求体：验证码登录或密码登录（二选一）
 ```json
-{ "identifierType": "USERNAME", "identifier": "alice", "password": "StrongP@ss" }
+{ "identifierType": "PHONE", "identifier": "13800138000", "password": "StrongP@ss" }
 ```
 - 响应：`object`
-  - `accessToken` `string` 访问令牌
-  - `refreshToken` `string` 刷新令牌
-  - `tokenType` `string` 令牌类型（`Bearer`）
-  - `expiresIn` `int` 访问令牌有效秒数
-- 示例：`curl -X POST "https://host/api/auth/login" -H "Content-Type: application/json" -d '{"identifierType":"USERNAME","identifier":"alice","password":"StrongP@ss"}'`
+  - `user` `object` 用户信息（字段同 `AuthUserResponse`）
+  - `token` `object` 令牌信息（字段同 `TokenResponse`）
+- 示例：`curl -X POST "https://host/api/v1/auth/login" -H "Content-Type: application/json" -d '{"identifierType":"PHONE","identifier":"13800138000","password":"StrongP@ss"}'`
 
 ### 4. 刷新 Token
 - 方法：`POST`
-- 路径：`/api/auth/token/refresh`
+- 路径：`/api/v1/auth/token/refresh`
 - 请求体：`{"refreshToken":"<token>"}`
 - 响应：`object`
   - `accessToken` `string`
+  - `accessTokenExpiresAt` `string`
   - `refreshToken` `string`
-  - `tokenType` `string`
-  - `expiresIn` `int`
-- 示例：`curl -X POST "https://host/api/auth/token/refresh" -H "Content-Type: application/json" -d '{"refreshToken":"<token>"}'`
+  - `refreshTokenExpiresAt` `string`
+- 示例：`curl -X POST "https://host/api/v1/auth/token/refresh" -H "Content-Type: application/json" -d '{"refreshToken":"<token>"}'`
 
 ### 5. 注销
 - 方法：`POST`
-- 路径：`/api/auth/logout`
-- 鉴权：需要
+- 路径：`/api/v1/auth/logout`
+- 鉴权：公开（请求体提供 `refreshToken`）
 - 请求体：通常包含 `refreshToken`
 - 响应：`204 No Content`
-- 示例：`curl -X POST "https://host/api/auth/logout" -H "Authorization: Bearer <access>" -H "Content-Type: application/json" -d '{"refreshToken":"<refresh>"}'`
+- 示例：`curl -X POST "https://host/api/v1/auth/logout" -H "Content-Type: application/json" -d '{"refreshToken":"<refresh>"}'`
 
 ### 6. 当前用户信息
 - 方法：`GET`
-- 路径：`/api/auth/me`
+- 路径：`/api/v1/auth/me`
 - 鉴权：需要
 - 响应：`object`
   - `id` `long`
-  - `username` `string`
   - `nickname` `string`
-  - `roles` `string[]`
-  - `createdAt` `string`
-- 示例：`curl "https://host/api/auth/me" -H "Authorization: Bearer <access>"`
+  - `avatar` `string`
+  - `phone` `string`
+  - `zhId` `string`
+  - `birthday` `string`
+  - `school` `string`
+  - `bio` `string`
+  - `gender` `string`
+  - `tagJson` `string`
+- 示例：`curl "https://host/api/v1/auth/me" -H "Authorization: Bearer <access>"`
 
 ## 用户资料
 ### 1. 更新资料
@@ -222,6 +223,7 @@
   - `description` `string`
   - `coverImage` `string`
   - `tags` `string[]`
+  - `authorId` `string`
   - `authorAvatar` `string`
   - `authorNickname` `string`
   - `tagJson` `string`

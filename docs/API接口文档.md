@@ -15,7 +15,7 @@
     {
       "code": "AUTH_INVALID_CREDENTIALS",
       "message": "用户名或密码错误",
-      "path": "/api/auth/login",
+      "path": "/api/v1/auth/login",
       "timestamp": "2025-01-01T12:00:00Z"
     }
     ```
@@ -25,19 +25,21 @@
 根据 `SecurityConfig` 配置：
 
 - 公开接口（无需认证）：
-  - `POST /api/auth/send-code`
-  - `POST /api/auth/register`
-  - `POST /api/auth/login`
-  - `POST /api/auth/token/refresh`
-  - `POST /api/auth/password/reset`
+  - `POST /api/v1/auth/send-code`
+  - `POST /api/v1/auth/register`
+  - `POST /api/v1/auth/login`
+  - `POST /api/v1/auth/token/refresh`
+  - `POST /api/v1/auth/logout`
+  - `POST /api/v1/auth/password/reset`
   - `GET /api/v1/knowposts/feed`  // 首页 Feed（公开可见的已发布内容）
+  - `GET /api/v1/knowposts/detail/{id}`  // 知文详情（非公开内容仍由服务层校验）
+  - `GET /api/v1/knowposts/{id}/qa/stream`  // RAG SSE 问答
 - 受保护接口（需携带 `Authorization: Bearer` 访问）：
-  - `GET /api/auth/me`
-  - `POST /api/auth/logout`
+  - `GET /api/v1/auth/me`
   - `PATCH /api/v1/profile`
   - `POST /api/v1/profile/avatar`
 
-访问受保护接口时需携带有效的 `access_token`。刷新接口使用 `refresh_token`，通常也在请求头或请求体中传递，具体见各接口说明。
+访问受保护接口时需携带有效的 `access_token`。刷新接口使用请求体中的 `refreshToken`，具体见各接口说明。
 
 ## 验证码与场景
 
@@ -55,13 +57,13 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 ### 1) 发送验证码
 
-- 路径：`POST /api/auth/send-code`
+- 路径：`POST /api/v1/auth/send-code`
 - 鉴权：公开
 - 请求体：
   ```json
   {
     "scene": "REGISTER",            // REGISTER | LOGIN | RESET_PASSWORD
-    "identifierType": "PHONE",     // 根据项目实际支持的类型，如 PHONE/EMAIL/USERNAME
+    "identifierType": "PHONE",     // 项目当前支持 PHONE / EMAIL
     "identifier": "13800138000"
   }
   ```
@@ -80,7 +82,7 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 - 示例 `curl`：
   ```bash
-  curl -X POST http://localhost:8080/api/auth/send-code \
+  curl -X POST http://localhost:8080/api/v1/auth/send-code \
     -H "Content-Type: application/json" \
     -d '{
       "scene": "REGISTER",
@@ -91,7 +93,7 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 ### 2) 注册
 
-- 路径：`POST /api/auth/register`
+- 路径：`POST /api/v1/auth/register`
 - 鉴权：公开
 - 请求体：
   ```json
@@ -100,37 +102,51 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
     "identifier": "13800138000",
     "code": "123456",
     "password": "StrongP@ssw0rd",
-    "nickname": "新用户"
+    "agreeTerms": true
   }
   ```
 - 成功响应：
   ```json
   {
-    "id": 1001,
-    "username": "u1001",
-    "nickname": "新用户",
-    "createdAt": "2025-01-01T12:00:00Z"
+    "user": {
+      "id": 1001,
+      "nickname": "新用户",
+      "avatar": "https://cdn.example.com/avatar/default.png",
+      "phone": "13800138000",
+      "zhId": "zg_1001",
+      "birthday": null,
+      "school": null,
+      "bio": null,
+      "gender": null,
+      "tagJson": "[]"
+    },
+    "token": {
+      "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
+      "accessTokenExpiresAt": "2025-01-01T12:15:00Z",
+      "refreshToken": "eyJhbGciOiJIUzI1NiJ9...",
+      "refreshTokenExpiresAt": "2025-01-08T12:00:00Z"
+    }
   }
   ```
 - 说明：
-  - 服务端会先校验验证码（场景为 `REGISTER`）。成功后创建用户并返回用户信息。
+  - 服务端会先校验验证码（场景为 `REGISTER`）。成功后创建用户，并返回用户信息与令牌对。
 
 - 示例 `curl`：
   ```bash
-  curl -X POST http://localhost:8080/api/auth/register \
+  curl -X POST http://localhost:8080/api/v1/auth/register \
     -H "Content-Type: application/json" \
     -d '{
       "identifierType": "PHONE",
       "identifier": "13800138000",
       "code": "123456",
       "password": "StrongP@ssw0rd",
-      "nickname": "新用户"
+      "agreeTerms": true
     }'
   ```
 
 ### 3) 登录
 
-- 路径：`POST /api/auth/login`
+- 路径：`POST /api/v1/auth/login`
 - 鉴权：公开
 - 请求体（支持验证码登录或密码登录，项目具体实现以 `LoginRequest` 为准）：
   - 验证码登录示例：
@@ -144,18 +160,32 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
   - 密码登录示例：
     ```json
     {
-      "identifierType": "USERNAME",
-      "identifier": "alice",
+      "identifierType": "PHONE",
+      "identifier": "13800138000",
       "password": "StrongP@ssw0rd"
     }
     ```
 - 成功响应：
   ```json
   {
-    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "tokenType": "Bearer",
-    "expiresIn": 900
+    "user": {
+      "id": 1001,
+      "nickname": "新用户",
+      "avatar": "https://cdn.example.com/avatar/default.png",
+      "phone": "13800138000",
+      "zhId": "zg_1001",
+      "birthday": null,
+      "school": null,
+      "bio": null,
+      "gender": null,
+      "tagJson": "[]"
+    },
+    "token": {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "accessTokenExpiresAt": "2025-01-01T12:15:00Z",
+      "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refreshTokenExpiresAt": "2025-01-08T12:00:00Z"
+    }
   }
   ```
 - 说明：
@@ -163,7 +193,7 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 - 示例 `curl`（验证码登录）：
   ```bash
-  curl -X POST http://localhost:8080/api/auth/login \
+  curl -X POST http://localhost:8080/api/v1/auth/login \
     -H "Content-Type: application/json" \
     -d '{
       "identifierType": "PHONE",
@@ -174,7 +204,7 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 ### 4) 刷新 Token
 
-- 路径：`POST /api/auth/token/refresh`
+- 路径：`POST /api/v1/auth/token/refresh`
 - 鉴权：公开（使用 Refresh Token）
 - 请求体：
   ```json
@@ -186,14 +216,14 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
   ```json
   {
     "accessToken": "new-access-token...",
+    "accessTokenExpiresAt": "2025-01-01T12:15:00Z",
     "refreshToken": "new-refresh-token...",
-    "tokenType": "Bearer",
-    "expiresIn": 900
+    "refreshTokenExpiresAt": "2025-01-08T12:00:00Z"
   }
   ```
 - 示例 `curl`：
   ```bash
-  curl -X POST http://localhost:8080/api/auth/token/refresh \
+  curl -X POST http://localhost:8080/api/v1/auth/token/refresh \
     -H "Content-Type: application/json" \
     -d '{
       "refreshToken": "<refresh_token>"
@@ -202,8 +232,8 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 ### 5) 注销
 
-- 路径：`POST /api/auth/logout`
-- 鉴权：需要携带 `Authorization: Bearer <access_token>`
+- 路径：`POST /api/v1/auth/logout`
+- 鉴权：公开（仅需在请求体中提供 `refreshToken`）
 - 请求体（根据 `LogoutRequest`，通常包含刷新令牌或会话标识）：
   ```json
   {
@@ -216,9 +246,8 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 - 示例 `curl`：
   ```bash
-  curl -X POST http://localhost:8080/api/auth/logout \
+  curl -X POST http://localhost:8080/api/v1/auth/logout \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer <access_token>" \
     -d '{
       "refreshToken": "<refresh_token>"
     }'
@@ -226,7 +255,7 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 ### 6) 重置密码
 
-- 路径：`POST /api/auth/password/reset`
+- 路径：`POST /api/v1/auth/password/reset`
 - 鉴权：公开
 - 请求体（`PasswordResetRequest`）：
   ```json
@@ -243,7 +272,7 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 - 示例 `curl`：
   ```bash
-  curl -X POST http://localhost:8080/api/auth/password/reset \
+  curl -X POST http://localhost:8080/api/v1/auth/password/reset \
     -H "Content-Type: application/json" \
     -d '{
       "identifierType": "PHONE",
@@ -255,22 +284,27 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 ### 7) 获取当前用户信息
 
-- 路径：`GET /api/auth/me`
+- 路径：`GET /api/v1/auth/me`
 - 鉴权：需要携带 `Authorization: Bearer <access_token>`
 - 成功响应（`AuthUserResponse` 示例）：
   ```json
   {
     "id": 1001,
-    "username": "alice",
     "nickname": "爱丽丝",
-    "roles": ["USER"],
-    "createdAt": "2024-12-01T10:20:30Z"
+    "avatar": "https://cdn.example.com/avatar/u1001.png",
+    "phone": "13800138000",
+    "zhId": "zg_1001",
+    "birthday": "2000-01-01",
+    "school": "Tongji University",
+    "bio": "热爱后端开发",
+    "gender": "female",
+    "tagJson": "[\"Java\",\"Redis\"]"
   }
   ```
 
 - 示例 `curl`：
   ```bash
-  curl -X GET http://localhost:8080/api/auth/me \
+  curl -X GET http://localhost:8080/api/v1/auth/me \
     -H "Authorization: Bearer <access_token>"
   ```
 
@@ -280,8 +314,8 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
 
 - `SendCodeRequest`
   - `scene`：`REGISTER|LOGIN|RESET_PASSWORD`
-  - `identifierType`：如 `PHONE|EMAIL|USERNAME`
-  - `identifier`：标识值（手机号/邮箱/用户名）
+  - `identifierType`：`PHONE|EMAIL`
+  - `identifier`：标识值（手机号/邮箱）
 
 - `SendCodeResponse`
   - `identifier`：同请求
@@ -304,7 +338,7 @@ Redis 存储键格式：`auth:code:{scene}:{identifier}`，哈希字段包括：
   - `identifier`
   - `code`
   - `password`
-  - `nickname`
+  - `agreeTerms`
 
 - `LogoutRequest`
   - `refreshToken`（根据实现而定）

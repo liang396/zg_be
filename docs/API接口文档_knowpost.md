@@ -1,6 +1,6 @@
 ### 首页·知文（KnowPost）发布模块
 
-说明：本模块支持图文帖的草稿创建、内容上传确认、元数据完善与发布。所有接口均需要携带 Access Token 鉴权。
+说明：本模块支持图文帖的草稿创建、内容上传确认、元数据完善与发布。写接口需要携带 Access Token；`GET /api/v1/knowposts/feed`、`GET /api/v1/knowposts/detail/{id}`、`GET /api/v1/knowposts/{id}/qa/stream` 为公开读取接口。
 
 ---
 
@@ -38,7 +38,7 @@
 ---
 
 - 路径：`PATCH /api/v1/knowposts/{id}`
-  - 鉴权：需要携带 `Authorization: Bearer <access_token)`
+  - 鉴权：需要携带 `Authorization: Bearer <access_token>`
   - 内容类型：`application/json`
   - 请求体（可选字段，未提交的字段保持不变）：
     ```json
@@ -109,7 +109,7 @@
 
 #### 典型发布流程
 1. 创建草稿：`POST /api/v1/knowposts/drafts` → 获取 `id`。
-2. 前端直传正文到阿里云 OSS（预签名接口暂未在本文档内定义）。
+2. 先调用上文的预签名接口获取 `putUrl/objectKey`，再直传正文到阿里云 OSS。
 3. 上传成功后回传确认：`POST /api/v1/knowposts/{id}/content/confirm`。
 4. 完善元数据：`PATCH /api/v1/knowposts/{id}`（标题、标签、图片等）。
 5. 发布：`POST /api/v1/knowposts/{id}/publish`。
@@ -118,7 +118,7 @@
 
 #### 发布流程技术方案（前端参考）
 - 鉴权与通用约定
-  - 所有请求均需携带 `Authorization: Bearer <access_token>`，缺失或失效返回 `401`。
+  - 所有写请求均需携带 `Authorization: Bearer <access_token>`，缺失或失效返回 `401`。
   - 所有写操作均以 `id + creator_id` 约束，避免越权；重复调用为幂等更新（发布重复调用无副作用）。
 
 - 对象命名与内容格式建议
@@ -274,6 +274,7 @@ N[注意：需在 OSS CORS 暴露 ETag] --- D
         "https://cdn.example.com/posts/123/images/b.jpg"
       ],
       "tags": ["商业", "创业", "管理"],
+      "authorId": "1001",
       "authorAvatar": "https://cdn.example.com/avatars/u1.png",
       "authorNickname": "王经理",
       "authorTagJson": "[\"商业\",\"创业\"]",
@@ -333,7 +334,7 @@ N[注意：需在 OSS CORS 暴露 ETag] --- D
     - 性能优化：服务端对用户维度列表做短期旁路缓存（约 30–50 秒随机抖动）；数据库建议建立索引 `(creator_id, status, publish_time)`。
     - `coverImage` 取自 `imgUrls` 的第一张图片；`tags` 为字符串数组；`tagJson` 为作者的领域标签（JSON 字符串，直接来自 `users.tags_json`）。
     - 用户维度列表缓存键格式：`feed:mine:{userId}:{size}:{page}`；缓存 TTL 为 `30s + 随机抖动(0–20s)`；计数与列表一并缓存；`liked`/`faved` 也随响应一并缓存（用户维度），但可能因操作造成 30s 内的短暂延迟。
-    - 为保证一致性，写操作（内容确认、元数据更新、发布）在数据库更新前后对 `feed:*` 做缓存双删：更新前删除一次、更新后延迟约 200ms 再删除一次，避免并发写回旧值。
+    - 当前代码对列表缓存主要依赖短 TTL；详情缓存 `knowpost:detail:{id}:v1` 会在内容确认、元数据更新、置顶、可见性更新、删除时失效。
 
 ---
 
@@ -347,7 +348,7 @@ N[注意：需在 OSS CORS 暴露 ETag] --- D
     { "isTop": true }
     ```
   - 成功响应：`204 No Content`
-  - 行为：仅更新 `is_top` 字段，需为作者本人；触发首页与「我的知文」缓存双删。
+  - 行为：仅更新 `is_top` 字段，需为作者本人；代码中会同步失效该知文详情缓存。
 
 - 路径：`PATCH /api/v1/knowposts/{id}/visibility`
   - 鉴权：需要携带 `Authorization: Bearer <access_token>`
@@ -357,17 +358,15 @@ N[注意：需在 OSS CORS 暴露 ETag] --- D
     { "visible": "public|followers|school|private|unlisted" }
     ```
   - 成功响应：`204 No Content`
-  - 行为：更新可见性；入参校验为上述枚举之一；触发首页与「我的知文」缓存双删。
+  - 行为：更新可见性；入参校验为上述枚举之一；代码中会同步失效该知文详情缓存。
 
 - 路径：`DELETE /api/v1/knowposts/{id}`
   - 鉴权：需要携带 `Authorization: Bearer <access_token>`
   - 请求体：无
   - 成功响应：`204 No Content`
-  - 行为：软删除（将 `status` 更新为 `deleted`）；触发首页与「我的知文」缓存双删。
+  - 行为：软删除（将 `status` 更新为 `deleted`）；代码中会同步失效该知文详情缓存。
 
-说明：为提升性能与一致性，以上编辑接口在数据库更新前后均执行缓存双删：
-- 公共首页缓存键：`feed:public:{page}:{size}`
-- 用户维度缓存键：`feed:mine:{userId}:{size}:{page}`（TTL 30–50 秒）
+说明：当前代码中，用户维度列表缓存键为 `feed:mine:{userId}:{size}:{page}`（TTL 30–50 秒）；详情缓存键为 `knowpost:detail:{id}:v1`，在内容确认、元数据更新、置顶、可见性更新、删除时会被失效。
 
 ---
 
@@ -440,7 +439,7 @@ N[注意：需在 OSS CORS 暴露 ETag] --- D
 #### 知文 RAG 索引重建
 
 - 路径：`POST /api/v1/knowposts/{id}/rag/reindex`
-  - 鉴权：建议限制为作者或管理员（部署时可加网关/鉴权策略）。
+  - 鉴权：需要携带 `Authorization: Bearer <access_token>`；当前代码未额外校验作者或管理员身份。
   - 内容类型：`application/json`
   - 请求体：无
   - 成功响应：返回整数，表示重建的切片数量，例如：
