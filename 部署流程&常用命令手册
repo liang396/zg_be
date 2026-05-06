@@ -1,0 +1,323 @@
+### 一、最终部署架构
+![{"key":"banner_image_0","image_type":"search","type":"load_by_key"}]()
+1. **前端**
+   - 平台：Vercel
+   - 前端通过正式域名访问后端
+
+2. **后端**
+   - 平台：腾讯云 CVM
+   - 部署方式：Docker Compose
+   - 服务：mysql、redis、app（Spring Boot）、proxy（Caddy）
+
+3. **搜索**
+   - Elasticsearch：部署在阿里云独立服务器
+   - 腾讯云后端通过 `SPRING_ELASTICSEARCH_URIS` 连接 ES
+
+4. **当前最终有效方案**
+   - 搜索启用
+   - 联想启用
+   - 新文章发布后同步入索引
+   - 点赞/收藏在 `kafka=false` 下同步更新计数
+   - Kafka / Canal / RAG 当前不依赖
+
+---
+
+### 二、项目目录结构
+腾讯云服务器项目目录最终是：
+```bash
+~/zhiguang_be
+```
+
+进入项目目录常用命令：
+```bash
+cd ~/zhiguang_be
+pwd
+ls
+ls deploy
+```
+
+---
+
+### 三、最终关键配置
+1. **后端环境变量文件**
+   - 文件位置：`deploy/backend.env`
+   - 查看常用命令：
+     ```bash
+     sed -n '1,120p' deploy/backend.env
+     grep -nE 'APP_FEATURES_|SPRING_ELASTICSEARCH_|SPRING_DATASOURCE_|SPRING_DATA_REDIS_' deploy/backend.env
+     ```
+
+2. **最终成功版关键配置项**
+   线上最终配置：
+   ```properties
+   SPRING_PROFILES_ACTIVE=prod
+
+   APP_FEATURES_KAFKA_ENABLED=false
+   APP_FEATURES_CANAL_ENABLED=false
+   APP_FEATURES_ELASTICSEARCH_ENABLED=true
+   APP_FEATURES_SEARCH_ENABLED=true
+   APP_FEATURES_SEARCH_INIT_ENABLED=true
+   APP_FEATURES_RAG_ENABLED=false
+
+   SPRING_ELASTICSEARCH_URIS=http://你的ES地址:9200
+   SPRING_ELASTICSEARCH_USERNAME=
+   SPRING_ELASTICSEARCH_PASSWORD=
+   ```
+
+   配置说明：
+   - `kafka=false`：线上没跑 Kafka
+   - `canal=false`：线上没跑 Canal
+   - `search/elasticsearch/search_init=true`：保留搜索能力
+   - `rag=false`：先不恢复，保证主流程稳定
+
+---
+
+### 四、最终成功版代码改动要点
+1. **搜索增量入索引改成同步**
+   - 原来依赖：Kafka、Canal
+   - 线上调整后：
+     - 发布文章 → 直接 `upsertKnowPost(id)`
+     - 改元数据 → 直接 `upsertKnowPost(id)`
+     - 改可见性 → 直接 `upsertKnowPost(id)`
+     - 删除文章 → `softDeleteKnowPost(id)`
+   - 作用：
+     - 新文章发布后立即能搜到
+     - 联想立即可用
+     - 不再依赖 Kafka/Canal
+
+2. **搜索索引兜底规则**
+   - 只允许 `published`/`public` 文章入索引，否则自动下线索引
+   - 作用：草稿/private/deleted 不会误进搜索
+
+3. **删除文章后发文数同步减 1**
+   - 修复逻辑：
+     - 删已发布文章 → posts - 1
+     - 删草稿/未发布文章 → 不变
+   - 作用：个人主页发文数恢复正常
+
+4. **点赞/收藏在 Kafka 关闭时同步更新 SDS**
+   - 修复逻辑：当 `APP_FEATURES_KAFKA_ENABLED=false` 时，点赞/取消点赞/收藏/取消收藏直接同步更新 `cnt:v1:knowpost:{id}`
+   - 作用：按钮亮、数字立刻变化、不再出现“亮了但 0”
+
+5. **列表/搜索缓存兜底**
+   - 修复逻辑：计数临时拿不到时保留旧值，不再把界面数字硬覆盖成 0
+
+---
+
+### 五、服务器部署流程
+#### 第 1 步：登录服务器
+```bash
+ssh ubuntu@124.221.39.132  # 若用 root 则替换为 root
+```
+
+#### 第 2 步：进入项目目录
+```bash
+cd ~/zhiguang_be
+pwd
+ls
+```
+
+#### 第 3 步：查看 compose 配置
+```bash
+sed -n '1,160p' deploy/docker-compose.yml
+sed -n '1,80p' Dockerfile
+```
+
+#### 第 4 步：查看环境变量配置
+```bash
+grep -nE 'APP_FEATURES_(ELASTICSEARCH|SEARCH|SEARCH_INIT|KAFKA|CANAL|RAG)_ENABLED|SPRING_ELASTICSEARCH_(URIS|USERNAME|PASSWORD)' deploy/backend.env
+```
+
+#### 第 5 步：重建并启动后端
+- 只重建 app：
+  ```bash
+  docker compose -f deploy/docker-compose.yml up -d --build app
+  ```
+- 整套一起拉起：
+  ```bash
+  docker compose -f deploy/docker-compose.yml up -d --build
+  ```
+
+#### 第 6 步：查看容器状态
+```bash
+docker compose -f deploy/docker-compose.yml ps
+```
+成功状态示例：
+```
+zhiguang-be      Up
+zhiguang-mysql   Up
+zhiguang-redis   Up
+zhiguang-proxy   Up
+```
+
+#### 第 7 步：查看后端启动日志
+```bash
+docker compose -f deploy/docker-compose.yml logs -f app
+```
+启动成功标识：`Started ZhiGuangApplication`  
+退出日志跟随：`Ctrl + C`
+
+#### 第 8 步：查看最近日志
+```bash
+# 后端日志
+docker compose -f deploy/docker-compose.yml logs --tail=200 app
+# 代理日志
+docker compose -f deploy/docker-compose.yml logs --tail=100 proxy
+```
+
+---
+
+### 六、健康检查与线上状态验证
+1. **健康检查**
+   - 正式域名：`https://zhiguang.cloud`
+   - 检查命令：
+     ```bash
+     curl https://zhiguang.cloud/actuator/health  # 成功返回 {"status":"UP"}
+     curl -I https://zhiguang.cloud/actuator/health  # 查看响应头
+     ```
+
+2. **端口访问说明**
+   - app 未直接映射宿主机端口，请勿使用 `curl http://localhost:8080`
+   - 对外访问流程：Caddy → app:8080
+
+---
+
+### 七、代码上传常用命令
+采用 scp 按文件上传，本地 Windows 终端执行：
+
+1. **上传单个文件**
+```bash
+scp "D:\hmdp-main\zhiguang_be\src\main\java\com\tongji\search\index\SearchIndexService.java" ubuntu@124.221.39.132:~/zhiguang_be/src/main/java/com/tongji/search/index/
+```
+
+2. **上传多个关键文件**
+```bash
+scp "D:\hmdp-main\zhiguang_be\src\main\java\com\tongji\knowpost\service\impl\KnowPostServiceImpl.java" ubuntu@124.221.39.132:~/zhiguang_be/src/main/java/com/tongji/knowpost/service/impl/
+scp "D:\hmdp-main\zhiguang_be\src\main\java\com\tongji\counter\service\impl\CounterServiceImpl.java" ubuntu@124.221.39.132:~/zhiguang_be/src/main/java/com/tongji/counter/service/impl/
+scp "D:\hmdp-main\zhiguang_be\src\main\java\com\tongji\knowpost\service\impl\KnowPostFeedServiceImpl.java" ubuntu@124.221.39.132:~/zhiguang_be/src/main/java/com/tongji/knowpost/service/impl/
+scp "D:\hmdp-main\zhiguang_be\src\main\java\com\tongji\search\service\impl\SearchServiceImpl.java" ubuntu@124.221.39.132:~/zhiguang_be/src/main/java/com/tongji/search/service/impl/
+scp "D:\hmdp-main\zhiguang_be\src\main\java\com\tongji\relation\api\RelationController.java" ubuntu@124.221.39.132:~/zhiguang_be/src/main/java/com/tongji/relation/api/
+```
+
+---
+
+### 八、本地编译常用命令
+项目依赖 JDK 21，本地操作如下：
+
+1. **检查版本**
+```bash
+java -version
+mvn -v
+```
+
+2. **切换 JDK 21（Git Bash）**
+```bash
+export JAVA_HOME="/d/jdk-21"
+export PATH="$JAVA_HOME/bin:$PATH"
+```
+
+3. **编译验证**
+```bash
+mvn -q -DskipTests compile
+```
+
+4. **打包**
+```bash
+mvn -DskipTests package
+```
+> 注：线上主要依赖 Dockerfile 自动打包，本地编译用于提前验错
+
+---
+
+### 九、搜索功能验证命令
+1. **查看搜索索引日志**
+```bash
+docker compose -f deploy/docker-compose.yml logs --tail=300 app | grep -E 'Indexed post|Index upsert|Search index'
+```
+成功日志示例：
+```
+Index upsert skipped: post ... is not published/public
+Indexed post ... result=Updated version=2
+```
+
+2. **直接查询 ES 文章**
+```bash
+curl "http://47.118.19.195:9200/zhiguang_content_index/_search?pretty" -H "Content-Type: application/json" -d '{
+  "query": {
+    "match": {
+      "title": "自动索引测试文章 20260506"
+    }
+  }
+}'
+```
+
+3. **查询联想 suggest**
+```bash
+curl "http://47.118.19.195:9200/zhiguang_content_index/_search?pretty" -H "Content-Type: application/json" -d '{
+  "suggest": {
+    "title_suggest_test": {
+      "prefix": "自动索引",
+      "completion": {
+        "field": "title_suggest",
+        "size": 10
+      }
+    }
+  }
+}'
+```
+
+---
+
+### 十、线上验证流程
+1. **新文章发布验证**
+   - 操作：发布标题为“自动索引测试文章 20260506”的新文章
+   - 验证项：
+     - 前端搜索能搜到
+     - 前端联想能联想到
+     - ES 里能查到文档
+
+2. **删除文章验证**
+   - 验证项：
+     - 删除后搜索不再命中
+     - 个人主页发文数减 1
+
+3. **点赞收藏验证**
+   - 验证项：
+     - 点赞/收藏按钮高亮正常
+     - 数字立即变化
+     - 切页/刷新后数字仍正常
+     - 首页 / 我的发布 / 搜索 / 详情 一致
+
+---
+
+### 十一、常用排障命令速查
+| 功能                | 命令                                                                 |
+|---------------------|----------------------------------------------------------------------|
+| 查看容器状态        | `docker compose -f deploy/docker-compose.yml ps`                     |
+| 查看后端日志        | `docker compose -f deploy/docker-compose.yml logs --tail=200 app`    |
+| 实时查看后端日志    | `docker compose -f deploy/docker-compose.yml logs -f app`            |
+| 查看代理日志        | `docker compose -f deploy/docker-compose.yml logs --tail=100 proxy`  |
+| 重启后端            | `docker compose -f deploy/docker-compose.yml restart app`            |
+| 重新构建后端        | `docker compose -f deploy/docker-compose.yml up -d --build app`      |
+| 整套服务重启        | `docker compose -f deploy/docker-compose.yml down && docker compose -f deploy/docker-compose.yml up -d --build` |
+| 健康接口检查        | `curl https://zhiguang.cloud/actuator/health`                        |
+| 查看关键配置        | `grep -nE 'APP_FEATURES_|SPRING_ELASTICSEARCH_|SPRING_DATASOURCE_|SPRING_DATA_REDIS_' deploy/backend.env` |
+| 查看文件部分内容    | `sed -n '1,120p' deploy/backend.env`                                 |
+| 验证代码上传成功    | `grep -nE 'incrementPosts\\(creatorId, -1\\)|findById\\(id\\)' src/main/java/com/tongji/knowpost/service/impl/KnowPostServiceImpl.java` |
+
+---
+
+### 十二、最终成功版的核心经验
+这次上线最终成功，核心是**适配当前资源条件的取舍**，而非“全量恢复功能”：
+
+#### 保留功能
+- 搜索、联想、发帖、点赞/收藏
+- HTTPS 域名、Docker 化部署
+
+#### 暂时不依赖的中间件
+- Kafka、Canal、RAG
+
+#### 关键思路
+不要让核心功能依赖线上未部署的中间件，因此做了以下调整：
+1. 搜索增量更新 → 改成同步
+2. 点赞收藏计数聚合 → 在 `kafka=false` 下改成同步写 SDS
